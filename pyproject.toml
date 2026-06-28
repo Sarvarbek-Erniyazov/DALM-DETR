@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "offsetiou-det"
+version = "0.1.0"
+description = "Location-Aware Matching for Dense & Occluded Object Detection"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Shahriyor Erniyazov" }]
+keywords = [
+    "object-detection",
+    "detr",
+    "crowded-scenes",
+    "occlusion",
+    "hungarian-matching",
+    "pedestrian-detection",
+]
+dependencies = [
+    "torch>=2.1",
+    "torchvision>=0.16",
+    "numpy",
+    "scipy",
+    "pyyaml",
+    "pycocotools",
+    "tqdm",
+    "opencv-python",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "black", "ruff"]
+logging = ["tensorboard", "wandb"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+
+[tool.ruff]
+line-length = 100

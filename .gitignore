@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# PyTorch / weights
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.engine
+
+# Datasets (never commit raw data)
+datasets/*
+!datasets/.gitkeep
+
+# Outputs (keep folders, ignore contents)
+outputs/checkpoints/*
+!outputs/checkpoints/.gitkeep
+outputs/logs/*
+!outputs/logs/.gitkeep
+outputs/figures/*
+!outputs/figures/.gitkeep
+
+# Experiment tracking
+wandb/
+runs/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
