@@ -1,67 +1,47 @@
-"""Convolutional backbone for OffsetIoU-Det.
-
-Wraps a torchvision ResNet and returns the final feature map (stride 32),
-projected to the transformer's hidden dimension by a 1x1 convolution.
-ImageNet-pretrained weights give a strong starting point and let the whole
-model train on a single 8 GB GPU.
-"""
-
 from __future__ import annotations
-
 import torch
 from torch import Tensor, nn
 from torchvision.models import resnet50, ResNet50_Weights
 
-
 class Backbone(nn.Module):
-    """ResNet-50 feature extractor with a projection to ``hidden_dim``.
-
-    Args:
-        hidden_dim: output channel dimension fed to the transformer.
-        pretrained: load ImageNet-pretrained weights.
-        freeze_bn:  keep BatchNorm layers in eval mode (standard for detection
-                    fine-tuning, where batch sizes are small).
-    """
-
-    def __init__(
-        self,
-        hidden_dim: int = 256,
-        pretrained: bool = True,
-        freeze_bn: bool = True,
-    ) -> None:
+    def __init__(self, hidden_dim=256, pretrained=True, freeze_bn=True):
         super().__init__()
         weights = ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
         resnet = resnet50(weights=weights)
-
-        # Keep everything up to (and including) the last residual stage.
-        self.body = nn.Sequential(
-            resnet.conv1,
-            resnet.bn1,
-            resnet.relu,
-            resnet.maxpool,
-            resnet.layer1,
-            resnet.layer2,
-            resnet.layer3,
-            resnet.layer4,
+        self.stem = nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool)
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        self.layer4 = resnet.layer4
+        self.input_proj = nn.ModuleList([
+            nn.Sequential(nn.Conv2d(512, hidden_dim, 1), nn.GroupNorm(32, hidden_dim)),
+            nn.Sequential(nn.Conv2d(1024, hidden_dim, 1), nn.GroupNorm(32, hidden_dim)),
+            nn.Sequential(nn.Conv2d(2048, hidden_dim, 1), nn.GroupNorm(32, hidden_dim)),
+        ])
+        self.extra_conv = nn.Sequential(
+            nn.Conv2d(2048, hidden_dim, 3, stride=2, padding=1),
+            nn.GroupNorm(32, hidden_dim),
         )
-        self.num_channels = 2048  # ResNet-50 layer4 output channels
-        self.input_proj = nn.Conv2d(self.num_channels, hidden_dim, kernel_size=1)
+        self.num_feature_levels = 4
         self.freeze_bn = freeze_bn
 
-    def train(self, mode: bool = True):
-        """Override to keep frozen BatchNorm in eval mode."""
+    def train(self, mode=True):
         super().train(mode)
         if self.freeze_bn:
-            for module in self.body.modules():
-                if isinstance(module, nn.BatchNorm2d):
-                    module.eval()
+            for m in self.modules():
+                if isinstance(m, nn.BatchNorm2d):
+                    m.eval()
         return self
 
-    def forward(self, images: Tensor) -> Tensor:
-        """Args:
-            images: (B, 3, H, W) normalized image tensor.
-        Returns:
-            features: (B, hidden_dim, H/32, W/32) feature map.
-        """
-        feats = self.body(images)
-        return self.input_proj(feats)
+    def forward(self, images):
+        x = self.stem(images)
+        x = self.layer1(x)
+        c3 = self.layer2(x)
+        c4 = self.layer3(c3)
+        c5 = self.layer4(c4)
+        return [
+            self.input_proj[0](c3),
+            self.input_proj[1](c4),
+            self.input_proj[2](c5),
+            self.extra_conv(c5),
+        ]
