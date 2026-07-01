@@ -13,3 +13,4 @@ tqdm>=4.65
 tensorboard>=2.14
 pytest>=7.4
 huggingface_hub>=0.20
+imagehash>=4.3
