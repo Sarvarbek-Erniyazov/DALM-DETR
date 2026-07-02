@@ -50,4 +50,4 @@ def offset_cost(
     )                                                     # (M,)
     normalizer = (tgt_size + eps).unsqueeze(0)           # (1, M)
 
-    return center_dist / normalizer
+    return (center_dist / normalizer).clamp(max=4.0)
