@@ -89,7 +89,7 @@ class SetCriterion(nn.Module):
 
             # Matcher uses only the foreground logits (drop the no-object column).
             row, col = self.matcher(
-                pred_logits[b, :, : self.num_classes],
+                pred_logits[b],
                 pred_boxes[b],
                 t_labels,
                 t_boxes,
