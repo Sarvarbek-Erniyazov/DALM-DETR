@@ -8,6 +8,11 @@ Designed for a single 8 GB GPU:
 
 The trainer is deliberately framework-light: a plain loop with explicit steps,
 so every part is visible and easy to audit.
+
+PROFILING: set cfg.profile=True to print a periodic breakdown of where time is
+spent per step: data loading (waiting on the DataLoader) vs. compute (forward +
+matcher + backward). This isolates whether a slowdown comes from I/O/CPU
+(data loading) or GPU-side compute (model + matching).
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ class TrainConfig:
     use_amp: bool = True
     log_every: int = 50
     device: str = "cuda"
+    profile: bool = False          # log data-load vs compute time breakdown
 
 
 def build_param_groups(model: nn.Module, cfg: TrainConfig):
@@ -69,22 +75,52 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
     t0 = time.time()
 
-    for it, (images, targets) in enumerate(loader):
+    # Profiling accumulators.
+    data_time_sum = 0.0
+    compute_time_sum = 0.0
+    matcher_time_sum = 0.0
+    max_targets_seen = 0
+
+    data_iter = iter(loader)
+    it = 0
+    while True:
+        t_data_start = time.time()
+        try:
+            images, targets = next(data_iter)
+        except StopIteration:
+            break
+        if cfg.profile and device == "cuda":
+            torch.cuda.synchronize()
+        data_time_sum += time.time() - t_data_start
+
+        t_compute_start = time.time()
         images = images.to(device, non_blocking=True)
+
+        if cfg.profile:
+            max_targets_seen = max(max_targets_seen, max((len(t["labels"]) for t in targets), default=0))
 
         with torch.autocast(device_type="cuda", enabled=cfg.use_amp):
             pred_logits, pred_boxes = model(images)
+
+            if cfg.profile and device == "cuda":
+                torch.cuda.synchronize()
+            t_matcher_start = time.time()
+
             losses = criterion(pred_logits, pred_boxes, targets)
+
+            if cfg.profile and device == "cuda":
+                torch.cuda.synchronize()
+            matcher_time_sum += time.time() - t_matcher_start
+
             loss = losses["loss_total"] / cfg.accum_steps
 
         if not torch.isfinite(loss):
-            # NaN-guard: skip this step rather than corrupting the weights.
             optimizer.zero_grad(set_to_none=True)
+            it += 1
             continue
 
         scaler.scale(loss).backward()
 
-        # Step every accum_steps mini-batches.
         if (it + 1) % cfg.accum_steps == 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.clip_max_norm)
@@ -92,13 +128,22 @@ def train_one_epoch(
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
 
+        if cfg.profile and device == "cuda":
+            torch.cuda.synchronize()
+        compute_time_sum += time.time() - t_compute_start
+
         for k in running:
             running[k] += losses[k].item()
         n_batches += 1
+        it += 1
 
-        if cfg.log_every and (it + 1) % cfg.log_every == 0:
+        if cfg.log_every and it % cfg.log_every == 0:
             avg = running["loss_total"] / n_batches
-            print(f"  epoch {epoch} | iter {it+1}/{len(loader)} | "
-                  f"loss {avg:.4f} | {time.time()-t0:.1f}s")
+            msg = (f"  epoch {epoch} | iter {it} | loss {avg:.4f} | "
+                   f"{time.time()-t0:.1f}s")
+            if cfg.profile:
+                msg += (f" | data={data_time_sum:.1f}s compute={compute_time_sum:.1f}s "
+                        f"matcher={matcher_time_sum:.1f}s max_gt={max_targets_seen}")
+            print(msg)
 
     return {k: v / max(n_batches, 1) for k, v in running.items()}

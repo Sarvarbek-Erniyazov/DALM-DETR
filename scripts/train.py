@@ -71,6 +71,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--resume", default="",
                    help="path to a checkpoint to resume model/optimizer/epoch from")
+    p.add_argument("--profile", action="store_true", help="log data vs compute time breakdown")
     return p.parse_args()
 
 
@@ -124,6 +125,7 @@ def main():
         epochs=args.epochs, lr=args.lr, lr_backbone=args.lr_backbone,
         weight_decay=args.weight_decay, clip_max_norm=args.clip_max_norm,
         accum_steps=args.accum_steps, use_amp=not args.no_amp, device=device,
+        profile=args.profile,
     )
     optimizer = torch.optim.AdamW(build_param_groups(model, cfg),
                                   weight_decay=cfg.weight_decay)
