@@ -60,6 +60,7 @@ class SetCriterion(nn.Module):
         pred_logits: Tensor,
         pred_boxes: Tensor,
         targets: list[dict[str, Tensor]],
+        aux_outputs=None,
     ) -> dict[str, Tensor]:
         """Compute losses for a batch.
 
@@ -129,9 +130,17 @@ class SetCriterion(nn.Module):
             + self.w_giou * loss_giou
         )
 
+        loss_aux = pred_boxes.sum() * 0.0
+        if aux_outputs:
+            for aux_logits, aux_boxes in aux_outputs:
+                aux = self.forward(aux_logits, aux_boxes, targets, aux_outputs=None)
+                loss_aux = loss_aux + aux["loss_total"]
+            loss_total = loss_total + loss_aux
+
         return {
             "loss_class": loss_class,
             "loss_l1": loss_l1,
             "loss_giou": loss_giou,
+            "loss_aux": loss_aux,
             "loss_total": loss_total,
         }

@@ -1,22 +1,31 @@
-"""OffsetIoU-Det detector: multi-scale backbone + deformable transformer + heads.
+"""OffsetIoU-Det detector: Deformable DETR with deep supervision.
 
-The model is a compact Deformable DETR. The novelty of this project is NOT the
-backbone or the attention; it is the *matcher* used during training
-(``matching/offset_cost.py``). The detector here is a clean, standard
-Deformable DETR so the ablation isolates the effect of the location-aware
-matching term.
+Two components critical for DETR-family convergence:
+    1. Auxiliary decoder losses: heads applied to EVERY decoder layer.
+    2. Reference-anchored boxes: centers predicted as deltas w.r.t. the
+       query reference point (inverse-sigmoid space).
+
+The novelty of this project is the *matcher* (matching/offset_cost.py);
+the detector stays standard so the ablation isolates the matching term.
 
 Forward returns:
-    pred_logits: (B, num_queries, num_classes + 1)   -- incl. "no object"
-    pred_boxes:  (B, num_queries, 4)                 -- (cx, cy, w, h) in [0, 1]
+    pred_logits: (B, Q, num_classes + 1)  -- final decoder layer
+    pred_boxes:  (B, Q, 4) in [0, 1]      -- final decoder layer
+    aux_outputs: list of (logits, boxes) per intermediate layer
 """
 
 from __future__ import annotations
 
+import torch
 from torch import Tensor, nn
 
 from .backbone import Backbone
 from .transformer import DeformableTransformer
+
+
+def inverse_sigmoid(x: Tensor, eps: float = 1e-5) -> Tensor:
+    x = x.clamp(min=eps, max=1 - eps)
+    return torch.log(x / (1 - x))
 
 
 class MLP(nn.Module):
@@ -38,15 +47,7 @@ class MLP(nn.Module):
 
 
 class OffsetIoUDet(nn.Module):
-    """End-to-end Deformable DETR detector.
-
-    Args:
-        num_classes: number of foreground classes (CrowdHuman: 1).
-        hidden_dim:  embedding dimension.
-        num_queries: number of object slots.
-        pretrained_backbone: load ImageNet weights for the ResNet.
-        **transformer_kwargs: forwarded to DeformableTransformer.
-    """
+    """End-to-end Deformable DETR detector with deep supervision."""
 
     def __init__(
         self,
@@ -67,9 +68,22 @@ class OffsetIoUDet(nn.Module):
         self.class_head = nn.Linear(hidden_dim, num_classes + 1)
         self.box_head = MLP(hidden_dim, hidden_dim, 4, num_layers=3)
 
-    def forward(self, images: Tensor) -> tuple[Tensor, Tensor]:
-        features = self.backbone(images)          # list of 4 levels
-        hs = self.transformer(features)           # (B, Q, C)
-        pred_logits = self.class_head(hs)         # (B, Q, num_classes + 1)
-        pred_boxes = self.box_head(hs).sigmoid()  # (B, Q, 4) in [0, 1]
-        return pred_logits, pred_boxes
+    def _predict(self, hs: Tensor, ref: Tensor):
+        logits = self.class_head(hs)
+        deltas = self.box_head(hs)
+        ref_inv = inverse_sigmoid(ref)
+        cxcy = (deltas[..., :2] + ref_inv).sigmoid()
+        wh = deltas[..., 2:].sigmoid()
+        boxes = torch.cat([cxcy, wh], dim=-1)
+        return logits, boxes
+
+    def forward(self, images: Tensor):
+        features = self.backbone(images)
+        hs_all, ref = self.transformer(features)
+
+        aux_outputs = []
+        for lvl in range(hs_all.shape[0] - 1):
+            aux_outputs.append(self._predict(hs_all[lvl], ref))
+
+        pred_logits, pred_boxes = self._predict(hs_all[-1], ref)
+        return pred_logits, pred_boxes, aux_outputs

@@ -51,3 +51,41 @@ def offset_cost(
     normalizer = (tgt_size + eps).unsqueeze(0)           # (1, M)
 
     return (center_dist / normalizer).clamp(max=4.0)
+
+
+def density_weights(
+    tgt_boxes,
+    radius_scale: float = 1.0,
+    eps: float = 1e-6,
+):
+    """Per-ground-truth crowd-density weights for the offset cost.
+
+    For each GT box j, count how many other GT centers lie within
+    ``radius_scale * sqrt(w_j * h_j)`` of its center (i.e., within roughly one
+    object-size). The weight is ``1 + log(1 + n_neighbors)``: isolated objects
+    keep weight 1, while objects in dense clusters get a stronger location
+    prior -- exactly where overlap-based costs (IoU/GIoU) are least
+    discriminative.
+
+    Args:
+        tgt_boxes: (M, 4) target boxes, normalized (cx, cy, w, h).
+        radius_scale: neighborhood radius in units of the object's own size.
+
+    Returns:
+        (M,) tensor of weights >= 1.
+    """
+    import torch
+
+    M = tgt_boxes.shape[0]
+    if M <= 1:
+        return torch.ones(M, device=tgt_boxes.device, dtype=tgt_boxes.dtype)
+
+    centers = tgt_boxes[:, :2]
+    dist = torch.cdist(centers, centers, p=2)
+    size = (tgt_boxes[:, 2] * tgt_boxes[:, 3]).clamp(min=eps).sqrt()
+    radius = radius_scale * size
+
+    within = dist < radius.unsqueeze(1)
+    within.fill_diagonal_(False)
+    n_neighbors = within.sum(dim=1).to(tgt_boxes.dtype)
+    return 1.0 + torch.log1p(n_neighbors)

@@ -24,7 +24,7 @@ from scipy.optimize import linear_sum_assignment
 from torch import Tensor
 
 from ..losses.box_ops import box_cxcywh_to_xyxy, generalized_box_iou
-from .offset_cost import offset_cost
+from .offset_cost import offset_cost, density_weights
 
 
 class HungarianMatcher:
@@ -43,11 +43,13 @@ class HungarianMatcher:
         w_l1: float = 5.0,
         w_giou: float = 2.0,
         w_offset: float = 0.0,
+        adaptive_offset: bool = False,
     ) -> None:
         self.w_class = w_class
         self.w_l1 = w_l1
         self.w_giou = w_giou
         self.w_offset = w_offset
+        self.adaptive_offset = adaptive_offset
         assert w_class != 0 or w_l1 != 0 or w_giou != 0, "all costs cannot be zero"
 
     @torch.no_grad()
@@ -99,7 +101,10 @@ class HungarianMatcher:
 
         # --- Location-aware offset cost (our term) ---
         if self.w_offset != 0:
-            cost = cost + self.w_offset * offset_cost(pred_boxes, tgt_boxes)
+            c_off = offset_cost(pred_boxes, tgt_boxes)
+            if self.adaptive_offset:
+                c_off = c_off * density_weights(tgt_boxes).unsqueeze(0)
+            cost = cost + self.w_offset * c_off
 
         # Solve the assignment on CPU (scipy), then move indices back.
         cost_np = cost.detach().cpu().numpy()

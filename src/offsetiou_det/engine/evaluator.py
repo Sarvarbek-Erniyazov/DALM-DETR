@@ -44,7 +44,7 @@ def evaluate_model(
 
     for images, targets in loader:
         images = images.to(device, non_blocking=True)
-        pred_logits, pred_boxes = model(images)        # (B,Q,C+1), (B,Q,4)
+        pred_logits, pred_boxes = model(images)[:2]        # (B,Q,C+1), (B,Q,4)
 
         # Foreground score = 1 - P(no-object); class 0 is "person".
         probs = pred_logits.softmax(-1)                # (B,Q,C+1)

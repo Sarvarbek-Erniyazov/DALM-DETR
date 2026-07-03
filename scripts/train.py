@@ -37,6 +37,8 @@ def parse_args():
     # Ablation switch
     p.add_argument("--w_offset", type=float, default=0.0,
                    help="weight of the location-aware matching term (0 = baseline)")
+    p.add_argument("--adaptive_offset", action="store_true",
+                   help="scale offset term by per-GT crowd density")
     # Data
     p.add_argument("--data_root", default="datasets/crowdhuman")
     p.add_argument("--train_odgt", default="annotation_train.odgt")
@@ -118,7 +120,7 @@ def main():
     # --- Model / matcher / criterion ---
     model = OffsetIoUDet(num_classes=1, num_queries=args.num_queries,
                          pretrained_backbone=True).to(device)
-    matcher = HungarianMatcher(w_offset=args.w_offset)
+    matcher = HungarianMatcher(w_offset=args.w_offset, adaptive_offset=args.adaptive_offset)
     criterion = SetCriterion(num_classes=1, matcher=matcher).to(device)
 
     cfg = TrainConfig(

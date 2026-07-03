@@ -100,13 +100,13 @@ def train_one_epoch(
             max_targets_seen = max(max_targets_seen, max((len(t["labels"]) for t in targets), default=0))
 
         with torch.autocast(device_type="cuda", enabled=cfg.use_amp):
-            pred_logits, pred_boxes = model(images)
+            pred_logits, pred_boxes, aux_outputs = model(images)
 
             if cfg.profile and device == "cuda":
                 torch.cuda.synchronize()
             t_matcher_start = time.time()
 
-            losses = criterion(pred_logits, pred_boxes, targets)
+            losses = criterion(pred_logits, pred_boxes, targets, aux_outputs=aux_outputs)
 
             if cfg.profile and device == "cuda":
                 torch.cuda.synchronize()

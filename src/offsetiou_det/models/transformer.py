@@ -152,7 +152,9 @@ class DeformableTransformer(nn.Module):
         ref = self.reference_points(query_pos).sigmoid()
         dec_ref = ref[:, :, None].repeat(1, 1, self.n_levels, 1)
 
+        intermediate = []
         for layer in self.decoder:
             tgt = layer(tgt, query_pos, dec_ref, src, spatial_shapes)
+            intermediate.append(tgt)
 
-        return tgt
+        return torch.stack(intermediate), ref   # (L,B,Q,C), (B,Q,2)
