@@ -1,24 +1,14 @@
-"""Cross-dataset (out-of-distribution) evaluation.
+"""Cross-dataset OOD evaluation: CrowdHuman-trained model -> CityPersons / WiderPerson.
 
-Loads a checkpoint trained on CrowdHuman and evaluates it -- with NO further
-training -- on a dataset it has never seen. This is the core evidence for
-whether the location-aware matching term (offset cost) generalizes beyond the
-dataset it was trained on, not just a CrowdHuman-specific quirk.
+No fine-tuning. Loads a checkpoint, runs evaluate_model (same metrics as val:
+MR^-2, AP, JI), prints one table row.
 
-Works with any dataset that follows the (images, targets) contract used by
-CrowdHumanDataset / CocoPersonDataset: targets are dicts with "labels" and
-"boxes" (normalized cx,cy,w,h).
-
-Example:
-    python scripts/eval_ood.py \
-        --checkpoint outputs/checkpoints/offsetiou_baseline_best.pth \
-        --dataset_type coco \
-        --image_dir datasets/citypersons/images \
-        --ann_path datasets/citypersons/annotations.json \
-        --dataset_name citypersons \
-        --tag baseline_on_citypersons
+Usage:
+  python scripts/eval_ood_v2.py --checkpoint outputs/checkpoints/offsetiou_baseline_v2_best.pth \
+      --dataset widerperson --data_root data/WiderPerson --image_size 640
+  python scripts/eval_ood_v2.py --checkpoint ... --dataset citypersons \
+      --data_root data/CityPersons --ann_file data/CityPersons/val_coco.json
 """
-
 from __future__ import annotations
 
 import argparse
@@ -26,87 +16,154 @@ import json
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+import torchvision.transforms.functional as TF
+from PIL import Image
+from torch.utils.data import DataLoader, Dataset
 
-from offsetiou_det.models.detector import OffsetIoUDet
-from offsetiou_det.engine.evaluator import evaluate_model
-from offsetiou_det.data.coco_person import CocoPersonDataset, collate_fn as coco_collate
-from offsetiou_det.data.crowdhuman import CrowdHumanDataset, collate_fn as ch_collate
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from offsetiou_det.engine.evaluator import evaluate_model  # noqa: E402
 
-def parse_args():
-    p = argparse.ArgumentParser(description="Cross-dataset OOD evaluation of a trained checkpoint.")
-    p.add_argument("--checkpoint", required=True, help="path to a .pth saved by scripts/train.py")
-    p.add_argument("--dataset_type", choices=["coco", "crowdhuman"], required=True)
-    p.add_argument("--image_dir", required=True)
-    p.add_argument("--ann_path", required=True, help="COCO json (coco) or .odgt file (crowdhuman)")
-    p.add_argument("--dataset_name", default="ood", help="short label used in the COCO loader / logs")
-    p.add_argument("--image_size", type=int, default=800)
-    p.add_argument("--batch_size", type=int, default=4)
-    p.add_argument("--num_queries", type=int, default=300)
-    p.add_argument("--num_workers", type=int, default=2)
-    p.add_argument("--limit", type=int, default=0, help="if >0, evaluate on only this many images")
-    p.add_argument("--out_dir", default="outputs")
-    p.add_argument("--tag", default="ood_eval", help="name for the results file")
-    return p.parse_args()
+# ImageNet stats — training transform bilan BIR XIL bo'lishi shart (QADAM 0 da tekshiramiz)
+MEAN = [0.485, 0.456, 0.406]
+STD = [0.229, 0.224, 0.225]
 
 
-def build_dataset(args):
-    if args.dataset_type == "coco":
-        ds = CocoPersonDataset(
-            image_dir=args.image_dir, ann_path=args.ann_path,
-            image_size=args.image_size, dataset_name=args.dataset_name,
+class WiderPersonDataset(Dataset):
+    """WiderPerson val split.
+
+    Layout:
+      data_root/Images/*.jpg
+      data_root/Annotations/<name>.jpg.txt   (line1: count; then: cls x1 y1 x2 y2)
+      data_root/val.txt                      (image ids, one per line)
+    Keeps classes 1-3 (pedestrians, riders, partially-visible); skips 4 (crowd), 5 (ignore).
+    """
+
+    def __init__(self, root: str, image_size: int):
+        self.root = Path(root)
+        self.image_size = image_size
+        ids = (self.root / "val.txt").read_text().split()
+        self.items = [i.strip() for i in ids if i.strip()]
+
+    def __len__(self):
+        return len(self.items)
+
+    def __getitem__(self, idx):
+        name = self.items[idx]
+        img = Image.open(self.root / "Images" / f"{name}.jpg").convert("RGB")
+        W, H = img.size
+
+        boxes = []
+        ann = self.root / "Annotations" / f"{name}.jpg.txt"
+        lines = ann.read_text().splitlines()
+        for line in lines[1:]:
+            p = line.split()
+            if len(p) < 5:
+                continue
+            cls, x1, y1, x2, y2 = int(p[0]), *map(float, p[1:5])
+            if cls > 3:
+                continue
+            cx, cy = (x1 + x2) / 2 / W, (y1 + y2) / 2 / H
+            w, h = (x2 - x1) / W, (y2 - y1) / H
+            if w <= 0 or h <= 0:
+                continue
+            boxes.append([cx, cy, w, h])
+
+        img = TF.normalize(
+            TF.to_tensor(TF.resize(img, [self.image_size, self.image_size])),
+            MEAN, STD,
         )
-        collate = coco_collate
-    else:
-        ds = CrowdHumanDataset(
-            image_dir=args.image_dir, odgt_path=args.ann_path, image_size=args.image_size,
-        )
-        collate = ch_collate
+        boxes = torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4))
+        return img, {"boxes": boxes, "labels": torch.zeros(len(boxes), dtype=torch.long)}
 
-    if args.limit > 0:
-        from torch.utils.data import Subset
-        ds = Subset(ds, list(range(min(args.limit, len(ds)))))
-    return ds, collate
+
+class CocoPersonDataset(Dataset):
+    """COCO-format json (CityPersons converted). bbox = [x, y, w, h] pixels."""
+
+    def __init__(self, root: str, ann_file: str, image_size: int):
+        self.root = Path(root)
+        self.image_size = image_size
+        coco = json.loads(Path(ann_file).read_text())
+        self.images = {im["id"]: im for im in coco["images"]}
+        self.anns: dict[int, list] = {}
+        for a in coco["annotations"]:
+            if a.get("iscrowd", 0) or a.get("ignore", 0):
+                continue
+            self.anns.setdefault(a["image_id"], []).append(a["bbox"])
+        self.ids = sorted(self.images.keys())
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, idx):
+        info = self.images[self.ids[idx]]
+        img = Image.open(self.root / info["file_name"]).convert("RGB")
+        W, H = img.size
+        boxes = []
+        for (x, y, w, h) in self.anns.get(self.ids[idx], []):
+            if w <= 0 or h <= 0:
+                continue
+            boxes.append([(x + w / 2) / W, (y + h / 2) / H, w / W, h / H])
+        img = TF.normalize(
+            TF.to_tensor(TF.resize(img, [self.image_size, self.image_size])),
+            MEAN, STD,
+        )
+        boxes = torch.tensor(boxes, dtype=torch.float32) if boxes else torch.zeros((0, 4))
+        return img, {"boxes": boxes, "labels": torch.zeros(len(boxes), dtype=torch.long)}
+
+
+def collate(batch):
+    imgs = torch.stack([b[0] for b in batch])
+    tgts = [b[1] for b in batch]
+    return imgs, tgts
+
+
+def build_model_from_checkpoint(ckpt_path: str, device: str):
+    ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    state = ckpt.get("model", ckpt.get("model_state_dict", ckpt))
+
+    # ---- TODO(MODEL): train.py dagi model qurish qatorlari bilan ayni moslash ----
+    from offsetiou_det.models import build_model  # agar factory nomi boshqa bo'lsa shu qatorni almashtir
+    model = build_model()
+    # -------------------------------------------------------------------------------
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    if missing or unexpected:
+        print(f"[warn] missing={len(missing)} unexpected={len(unexpected)} keys")
+    return model.to(device).eval()
 
 
 def main():
-    args = parse_args()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--dataset", choices=["widerperson", "citypersons"], required=True)
+    ap.add_argument("--data_root", required=True)
+    ap.add_argument("--ann_file", default=None, help="COCO json (citypersons uchun)")
+    ap.add_argument("--image_size", type=int, default=640)
+    ap.add_argument("--batch_size", type=int, default=2)
+    ap.add_argument("--limit", type=int, default=0, help="smoke-test: faqat N ta rasm")
+    args = ap.parse_args()
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"device={device} | checkpoint={args.checkpoint}")
 
-    ckpt = torch.load(args.checkpoint, map_location=device)
-    w_offset = ckpt.get("w_offset", None)
-    print(f"checkpoint w_offset={w_offset} | trained epoch={ckpt.get('epoch')}")
+    if args.dataset == "widerperson":
+        ds = WiderPersonDataset(args.data_root, args.image_size)
+    else:
+        assert args.ann_file, "--ann_file kerak (citypersons)"
+        ds = CocoPersonDataset(args.data_root, args.ann_file, args.image_size)
 
-    model = OffsetIoUDet(num_classes=1, num_queries=args.num_queries,
-                         pretrained_backbone=False).to(device)
-    model.load_state_dict(ckpt["model"])
-    model.eval()
+    if args.limit:
+        ds = torch.utils.data.Subset(ds, range(min(args.limit, len(ds))))
 
-    ds, collate = build_dataset(args)
     loader = DataLoader(ds, batch_size=args.batch_size, shuffle=False,
-                        collate_fn=collate, num_workers=args.num_workers)
-    print(f"OOD eval images: {len(ds)}")
+                        num_workers=2, collate_fn=collate)
+    model = build_model_from_checkpoint(args.checkpoint, device)
 
     metrics = evaluate_model(model, loader, device=device, image_size=args.image_size)
-    print(f"OOD metrics on {args.dataset_name} "
-          f"(w_offset={w_offset}): MR^-2={metrics['mr']:.4f} "
+    print(f"\n[OOD:{args.dataset}] ckpt={Path(args.checkpoint).name} "
+          f"images={len(ds)} | MR^-2={metrics['mr']:.4f} "
           f"AP={metrics['ap']:.4f} JI={metrics['ji']:.4f}")
-
-    out_dir = Path(args.out_dir) / "logs"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    result = {
-        "checkpoint": args.checkpoint,
-        "w_offset": w_offset,
-        "dataset_name": args.dataset_name,
-        "num_images": len(ds),
-        **metrics,
-    }
-    out_path = out_dir / f"ood_{args.tag}.json"
-    with open(out_path, "w") as f:
-        json.dump(result, f, indent=2)
-    print(f"saved -> {out_path}")
 
 
 if __name__ == "__main__":
