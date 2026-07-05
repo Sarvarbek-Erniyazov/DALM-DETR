@@ -63,7 +63,15 @@ LOCAL_CKPT_DIR = _HERE.parent / "outputs" / "checkpoints"
 HF_REPO = os.environ.get("DALM_HF_REPO", "")
 CKPT_FILES = {
     "baseline": os.environ.get("DALM_BASELINE_FILE", "offsetiou_baseline_v3_best.pth"),
+    "const": os.environ.get("DALM_CONST_FILE", "offsetiou_ours_const_v3_best.pth"),
     "dalm": os.environ.get("DALM_ADAPTIVE_FILE", "offsetiou_ours_adaptive_v3_best.pth"),
+}
+
+# dropdown display name -> checkpoint key (three-rung ablation, live)
+MODEL_CHOICES = {
+    "baseline · standard matching": "baseline",
+    "ours-const · constant location prior": "const",
+    "DALM-DETR · density-adaptive": "dalm",
 }
 
 
@@ -204,12 +212,15 @@ def strata(n: int) -> str:
 # Main comparison pipeline.
 # ---------------------------------------------------------------------------
 
-def compare(img: Image.Image, conf: float):
+def compare(img: Image.Image, conf: float, left_name: str, right_name: str):
     if img is None:
         raise gr.Error("Upload an image first.")
 
-    bb, bs, bt = detect("baseline", img, conf)
-    ob, os_, ot = detect("dalm", img, conf)
+    try:
+        bb, bs, bt = detect(MODEL_CHOICES[left_name], img, conf)
+        ob, os_, ot = detect(MODEL_CHOICES[right_name], img, conf)
+    except FileNotFoundError as e:
+        raise gr.Error(f"Checkpoint not ready yet (training in progress): {e}")
 
     # people found only by DALM-DETR (no baseline box with IoU > 0.5)
     extra = np.arange(len(ob))
@@ -222,11 +233,11 @@ def compare(img: Image.Image, conf: float):
 
     nb, no, ne = len(bb), len(ob), len(extra)
     stats = (
-        f"| | baseline | **DALM-DETR** |\n|---|---|---|\n"
+        f"| | {left_name.split(' \u00b7 ')[0]} | **{right_name.split(' \u00b7 ')[0]}** |\n|---|---|---|\n"
         f"| persons found | {nb} | **{no}** |\n"
         f"| scene density | {strata(nb)} | {strata(no)} |\n"
         f"| inference (CPU) | {bt:.2f}s | {ot:.2f}s |\n\n"
-        + (f"**+{ne} additional person(s)** found only by density-adaptive matching "
+        + (f"**+{ne} additional person(s)** found only by the right model "
            f"(amber, third panel)." if ne else
            "Both models agree on this image — differences show up most in dense crowds.")
     )
@@ -295,22 +306,26 @@ with gr.Blocks(title="DALM-DETR — crowded pedestrian detection") as demo:
         with gr.Column(scale=1):
             inp = gr.Image(type="pil", label="input scene")
             conf = gr.Slider(0.05, 0.9, value=0.4, step=0.05, label="confidence threshold")
+            choices = list(MODEL_CHOICES)
+            left_sel = gr.Dropdown(choices, value=choices[0], label="left model")
+            right_sel = gr.Dropdown(choices, value=choices[2], label="right model")
             btn = gr.Button("Detect people", variant="primary")
             if EXAMPLES:
                 gr.Examples(EXAMPLES, inputs=inp, label="crowded examples")
             stats = gr.Markdown()
         with gr.Column(scale=2):
             with gr.Row():
-                out_b = gr.Image(label="baseline · standard matching", elem_classes="panel-label")
-                out_o = gr.Image(label="DALM-DETR · density-adaptive", elem_classes="panel-label")
-            out_d = gr.Image(label="difference · found only by DALM-DETR")
+                out_b = gr.Image(label="left model", elem_classes="panel-label")
+                out_o = gr.Image(label="right model", elem_classes="panel-label")
+            out_d = gr.Image(label="difference · found only by the right model")
             gr.HTML(LEGEND)
     gr.Markdown(
         "Trained on CrowdHuman (15k images) on a single RTX 4060 · "
         "primary metric MR⁻² · "
         "[code & paper-style README on GitHub](https://github.com/YOUR_USERNAME/DALM-DETR)"
     )
-    btn.click(compare, inputs=[inp, conf], outputs=[out_b, out_o, out_d, stats])
+    btn.click(compare, inputs=[inp, conf, left_sel, right_sel],
+              outputs=[out_b, out_o, out_d, stats])
     inp.change(lambda: None, None, None)  # no auto-run; keep CPU budget for the button
 
 if __name__ == "__main__":
