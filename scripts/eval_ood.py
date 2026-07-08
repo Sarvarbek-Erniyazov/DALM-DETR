@@ -122,15 +122,10 @@ def collate(batch):
 def build_model_from_checkpoint(ckpt_path: str, device: str):
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     state = ckpt.get("model", ckpt.get("model_state_dict", ckpt))
-
-    # ---- TODO(MODEL): train.py dagi model qurish qatorlari bilan ayni moslash ----
-    from offsetiou_det.models import build_model  # agar factory nomi boshqa bo'lsa shu qatorni almashtir
-    model = build_model()
-    # -------------------------------------------------------------------------------
-
-    missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing or unexpected:
-        print(f"[warn] missing={len(missing)} unexpected={len(unexpected)} keys")
+    # train.py bilan ayni moslik:
+    from offsetiou_det.models.detector import OffsetIoUDet
+    model = OffsetIoUDet(num_classes=1, num_queries=300, pretrained_backbone=False)
+    model.load_state_dict(state, strict=True)
     return model.to(device).eval()
 
 
@@ -147,11 +142,9 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    if args.dataset == "widerperson":
-        ds = WiderPersonDataset(args.data_root, args.image_size)
-    else:
-        assert args.ann_file, "--ann_file kerak (citypersons)"
-        ds = CocoPersonDataset(args.data_root, args.ann_file, args.image_size)
+    # Ikkala OOD dataset ham Roboflow COCO formatida (leakage audit bilan bir xil nusxa)
+    assert args.ann_file, "--ann_file kerak (COCO json)"
+    ds = CocoPersonDataset(args.data_root, args.ann_file, args.image_size)
 
     if args.limit:
         ds = torch.utils.data.Subset(ds, range(min(args.limit, len(ds))))

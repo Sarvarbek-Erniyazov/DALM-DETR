@@ -1,0 +1,8 @@
+{
+  "num_crowdhuman_hashed": 15000,
+  "num_ood_images": 342,
+  "num_near_duplicates": 0,
+  "leakage_rate": 0.0,
+  "threshold": 8,
+  "matches": []
+}
