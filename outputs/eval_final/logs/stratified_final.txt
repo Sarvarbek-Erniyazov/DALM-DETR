@@ -1,0 +1,17 @@
+stratum    model                  imgs      GT    MR^-2       AP       JI
+-------------------------------------------------------------------------
+overall    baseline               4370   99481   0.7905   0.6486   0.4882
+overall    ours-const             4370   99481   0.8062   0.6549   0.4758
+overall    ours-adaptive          4370   99481   0.8403   0.6252   0.4480
+
+sparse     baseline               1182    7365   0.5560   0.7714   0.6097
+sparse     ours-const             1182    7365   0.5887   0.7722   0.5949
+sparse     ours-adaptive          1182    7365   0.6264   0.7508   0.5746
+
+medium     baseline               1881   29629   0.6789   0.7377   0.5714
+medium     ours-const             1881   29629   0.6962   0.7487   0.5619
+medium     ours-adaptive          1881   29629   0.7329   0.7251   0.5358
+
+dense      baseline               1307   62487   0.8707   0.5884   0.4388
+dense      ours-const             1307   62487   0.8855   0.5907   0.4258
+dense      ours-adaptive          1307   62487   0.9127   0.5557   0.3978
