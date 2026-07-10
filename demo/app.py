@@ -322,7 +322,7 @@ with gr.Blocks(title="DALM-DETR — crowded pedestrian detection") as demo:
     gr.Markdown(
         "Trained on CrowdHuman (15k images) on a single RTX 4060 · "
         "primary metric MR⁻² · "
-        "[code & paper-style README on GitHub](https://github.com/YOUR_USERNAME/DALM-DETR)"
+        "[code & paper-style README on GitHub](https://github.com/Sarvarbek-Erniyazov/DALM-DETR)"
     )
     btn.click(compare, inputs=[inp, conf, left_sel, right_sel],
               outputs=[out_b, out_o, out_d, stats])
