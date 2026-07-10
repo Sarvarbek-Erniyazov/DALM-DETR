@@ -208,6 +208,8 @@ We report these deliberately: debugging is part of the research record.
   from the base offset term at inference time) to fully separate the two
   effects, and note this as the clearest direction for follow-up.
 
+**Code & full commit history:** https://github.com/Sarvarbek-Erniyazov/DALM-DETR
+
 ## 7. Repository layout
 
     src/offsetiou_det/
